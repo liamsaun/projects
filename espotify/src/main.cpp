@@ -1,12 +1,12 @@
 #include <Arduino.h>
 #include <SPI.h>
-#include <TFT_eSPI.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <TJpg_Decoder.h>
 
 #include "config.h"
+#include "display.h"
 #include "data_structs.h"
 #include "nvs_store.h"
 
@@ -17,8 +17,14 @@ String spotifyAccessToken = "";
 uint32_t tokenExpirationTime = 0;
 
 // Globals
+#if defined(DISPLAY_AMOLED_QSPI)
+TFT_eSprite sprite;
+TFT_eSprite &screen = sprite;   // Boot/setup text is drawn into the sprite, then pushed
+#else
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite sprite = TFT_eSprite(&tft);
+TFT_eSPI &screen = tft;         // Boot/setup text goes straight to the panel
+#endif
 
 #include "ui_volos.h"
 
@@ -39,11 +45,27 @@ uint16_t albumArt[15616] = {0}; // 128x122 buffer for background cover art
 uint32_t lastMusicActivityMs = 0;  // tracks when music was last playing
 bool     screenOff = false;
 
-// Factory Reset Button
-#define RESET_BTN_PIN  12
+// Factory Reset Button (RESET_BTN_PIN is set per board in config.h)
 #define RESET_HOLD_MS  3000
 uint32_t btnPressStart = 0;
 bool     btnWasPressed = false;
+
+// Playback Controls (touch gestures -> Spotify task)
+enum PlayerCommand : uint8_t { CMD_TOGGLE_PLAY, CMD_NEXT, CMD_PREVIOUS };
+QueueHandle_t playerCmdQueue = nullptr;
+
+// Feedback badge drawn over the UI after a gesture (guarded by uiMutex)
+ControlIcon overlayIcon  = ControlIcon::None;
+const char *overlayMsg   = "";
+uint32_t    overlayUntil = 0;
+
+#if defined(HAS_TOUCH)
+#include "touch_cst9217.h"
+#include "gestures.h"
+GestureDetector gestures;
+uint32_t lastTouchPollMs = 0;
+bool     touchWokeScreen = false;
+#endif
 
 bool tjpg_callback(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
   if (y >= 64 || x >= 64) return 1;
@@ -64,7 +86,7 @@ bool tjpg_callback(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitma
       uint8_t alpha = 20 + (90 * (1024 - distY * distY)) / 1024;
       
       // High-precision alpha blend with the vignette alpha
-      uint16_t dimColor = tft.alphaBlend(alpha, color, 0x0000); 
+      uint16_t dimColor = alphaBlend565(alpha, color, 0x0000); 
       uint16_t swappedColor = (dimColor >> 8) | (dimColor << 8);
       
       // Scale 64x64 to 128x120 (fits exactly between y=24 and y=144)
@@ -110,7 +132,9 @@ void spotifyTask(void *pvParameters);
 void applyScreenTimeout(uint16_t seconds);
 
 inline void blWrite(uint8_t val) {
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
+#if defined(DISPLAY_AMOLED_QSPI)
+  Amoled::setBrightness(val);   // No backlight on an AMOLED: sets panel brightness
+#elif ESP_ARDUINO_VERSION_MAJOR >= 3
   ledcWrite(PIN_BL, val);
 #else
   ledcWrite(BL_CHANNEL, val);
@@ -175,6 +199,56 @@ void wakeScreen() {
   lastMusicActivityMs = millis();
 }
 
+// Saved wake pin, unless it collides with a pin the board needs (display, touch, USB)
+uint8_t wakeButtonPin() {
+  uint8_t pin = NVStore::creds.wakePin;
+  if (pin >= 64 || (RESERVED_PIN_MASK & (1ULL << pin))) return DEFAULT_WAKE_PIN;
+  return pin;
+}
+
+#if defined(HAS_TOUCH)
+// Touch Controls: tap = play/pause, swipe left = next, swipe right = previous
+void handleTouch(uint32_t now) {
+  if (now - lastTouchPollMs < 15) return;
+  lastTouchPollMs = now;
+
+  int16_t x = 0, y = 0;
+  bool touched = Touch::read(x, y);
+  if (touched) {
+    if (screenOff) touchWokeScreen = true;  // This touch only wakes the screen
+    wakeScreen();                           // Also restarts the screen timeout
+  }
+
+  Gesture g = gestures.update(touched, x, y, now);
+  if (g == Gesture::None) {
+    if (!gestures.isTouching()) touchWokeScreen = false;
+    return;
+  }
+  if (touchWokeScreen) {
+    touchWokeScreen = false;
+    return;
+  }
+
+  PlayerCommand cmd;
+  xSemaphoreTake(uiMutex, portMAX_DELAY);
+  if (g == Gesture::Tap) {
+    cmd = CMD_TOGGLE_PLAY;
+    overlayIcon = spotify.isPlaying ? ControlIcon::Pause : ControlIcon::Play;
+  } else if (g == Gesture::SwipeLeft) {
+    cmd = CMD_NEXT;
+    overlayIcon = ControlIcon::Next;
+  } else {
+    cmd = CMD_PREVIOUS;
+    overlayIcon = ControlIcon::Previous;
+  }
+  overlayUntil = now + 700;
+  forceRedraw = true;
+  xSemaphoreGive(uiMutex);
+
+  xQueueSend(playerCmdQueue, &cmd, 0);  // Dropped if 4 are already waiting
+}
+#endif
+
 // Setup - NVS-Driven Boot Flow
 static uint32_t apShutdownTime = 0;
 static bool spotifyTaskStarted = false;
@@ -183,45 +257,57 @@ void setup() {
   Serial.begin(115200);
   
   uiMutex = xSemaphoreCreateMutex();
+  playerCmdQueue = xQueueCreate(4, sizeof(PlayerCommand));
 
   pinMode(RESET_BTN_PIN, INPUT_PULLUP);
 
   // Wake button setup (configurable GPIO, loaded after NVS)
 
+#if defined(DISPLAY_AMOLED_QSPI)
+  if (!Amoled::begin()) {
+    Serial.println("[Boot] AMOLED init failed");
+  }
+#if defined(HAS_TOUCH)
+  Touch::begin();
+#endif
+#else
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
   ledcAttach(PIN_BL, BL_FREQ, BL_RES);
 #else
   ledcSetup(BL_CHANNEL, BL_FREQ, BL_RES);
   ledcAttachPin(PIN_BL, BL_CHANNEL);
 #endif
+#endif
   blWrite(BL_FULL);
 
+#if !defined(DISPLAY_AMOLED_QSPI)
   tft.begin();
   tft.setRotation(SCREEN_ROT);
-  tft.fillScreen(TFT_BLACK);
+#endif
+  sprite.createSprite(128, 160);
+  screen.fillScreen(TFT_BLACK);
   
   TJpgDec.setJpgScale(1);
   TJpgDec.setSwapBytes(false);
   TJpgDec.setCallback(tjpg_callback);
 
-  sprite.createSprite(128, 160);
-
 // Load NVS Credentials
   NVStore::load();
 
   if (!NVStore::hasWiFi()) {
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextFont(2);
-    tft.drawString("ESPotify", 10, 10);
-    tft.setTextFont(1);
-    tft.setTextColor(0x07E0, TFT_BLACK);
-    tft.drawString("Setup Mode", 10, 32);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString("Connect WiFi to:", 10, 52);
-    tft.setTextColor(0x07FF, TFT_BLACK);
-    tft.drawString("ESPotify-Setup", 10, 66);
-    tft.setTextColor(0x7BEF, TFT_BLACK);
-    tft.drawString("Then open browser", 10, 86);
+    screen.setTextColor(TFT_WHITE, TFT_BLACK);
+    screen.setTextFont(2);
+    screen.drawString("ESPotify", 10, 10);
+    screen.setTextFont(1);
+    screen.setTextColor(0x07E0, TFT_BLACK);
+    screen.drawString("Setup Mode", 10, 32);
+    screen.setTextColor(TFT_WHITE, TFT_BLACK);
+    screen.drawString("Connect WiFi to:", 10, 52);
+    screen.setTextColor(0x07FF, TFT_BLACK);
+    screen.drawString("ESPotify-Setup", 10, 66);
+    screen.setTextColor(0x7BEF, TFT_BLACK);
+    screen.drawString("Then open browser", 10, 86);
+    displayShowScreen();
 
     Portal::startAP();
     Serial.println("[Boot] No WiFi creds → AP mode");
@@ -229,25 +315,28 @@ void setup() {
   }
 
 // WiFi Credentials Exist → Connect
-  tft.setTextColor(TFT_WHITE);
-  tft.drawString("WiFi...", 10, 10);
+  screen.setTextColor(TFT_WHITE);
+  screen.drawString("WiFi...", 10, 10);
+  displayShowScreen();
   
   WiFi.begin(NVStore::creds.wifiSSID.c_str(), NVStore::creds.wifiPass.c_str());
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 30) {
     delay(500);
-    tft.print(".");
+    screen.print(".");
+    displayShowScreen();
     attempts++;
   }
   
   if (WiFi.status() != WL_CONNECTED) {
     // WiFi failedfall back to AP mode
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(0xF800, TFT_BLACK);
-    tft.drawString("WiFi Failed!", 10, 10);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextFont(1);
-    tft.drawString("Starting setup...", 10, 30);
+    screen.fillScreen(TFT_BLACK);
+    screen.setTextColor(0xF800, TFT_BLACK);
+    screen.drawString("WiFi Failed!", 10, 10);
+    screen.setTextColor(TFT_WHITE, TFT_BLACK);
+    screen.setTextFont(1);
+    screen.drawString("Starting setup...", 10, 30);
+    displayShowScreen();
     
     NVStore::clearAll();  // Clear bad creds
     delay(1500);
@@ -256,19 +345,21 @@ void setup() {
     return;
   }
 
-  tft.fillScreen(TFT_BLACK);
-  tft.setCursor(10, 10);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.println("WiFi Connected!");
-  tft.println(WiFi.localIP());
+  screen.fillScreen(TFT_BLACK);
+  screen.setCursor(10, 10);
+  screen.setTextColor(TFT_WHITE, TFT_BLACK);
+  screen.println("WiFi Connected!");
+  screen.println(WiFi.localIP());
+  displayShowScreen();
 
   if (!NVStore::hasSpotify()) {
 // PHASE 2: WiFi OK but no Spotify → Setup Page
-    tft.setTextColor(0x07E0, TFT_BLACK);
-    tft.println("");
-    tft.println("Visit to setup:");
-    tft.setTextColor(0x07FF, TFT_BLACK);
-    tft.println(WiFi.localIP());
+    screen.setTextColor(0x07E0, TFT_BLACK);
+    screen.println("");
+    screen.println("Visit to setup:");
+    screen.setTextColor(0x07FF, TFT_BLACK);
+    screen.println(WiFi.localIP());
+    displayShowScreen();
     
     Portal::startSTA();
     Serial.println("[Boot] No Spotify creds → serving setup page");
@@ -283,8 +374,8 @@ void setup() {
   blWrite(NVStore::creds.brightness);
 
   // Setup wake button pin
-  if (NVStore::creds.wakePin != RESET_BTN_PIN) {
-    pinMode(NVStore::creds.wakePin, INPUT_PULLUP);
+  if (wakeButtonPin() != RESET_BTN_PIN) {
+    pinMode(wakeButtonPin(), INPUT_PULLUP);
   }
 
   // Initialize activity timer
@@ -298,7 +389,7 @@ void setup() {
     NULL,               // Parameters
     1,                  // Priority
     NULL,               // Task handle
-    1                   // Core 1 (UI Core)
+    SPOTIFY_TASK_CORE   // Core 1 (UI Core) on dual-core chips
   );
   spotifyTaskStarted = true;
 }
@@ -306,6 +397,8 @@ void setup() {
 // Loop
 void loop() {
   uint32_t now = millis();
+
+  displayService();
 
 // Web Server (always runs)
   Portal::loop();
@@ -321,7 +414,7 @@ void loop() {
       // If Spotify creds now exist, start Spotify task
       NVStore::load();
       if (NVStore::hasSpotify() && !spotifyTaskStarted) {
-        xTaskCreatePinnedToCore(spotifyTask, "SpotifyTask", 12288, NULL, 1, NULL, 1);
+        xTaskCreatePinnedToCore(spotifyTask, "SpotifyTask", 12288, NULL, 1, NULL, SPOTIFY_TASK_CORE);
         spotifyTaskStarted = true;
       }
     }
@@ -329,15 +422,16 @@ void loop() {
 
 // Start Spotify task when creds become available
   if (!spotifyTaskStarted && NVStore::hasSpotify() && WiFi.status() == WL_CONNECTED) {
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(0x07E0, TFT_BLACK);
-    tft.drawString("Setup Complete!", 10, 10);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextFont(1);
-    tft.drawString("Starting Spotify...", 10, 30);
+    screen.fillScreen(TFT_BLACK);
+    screen.setTextColor(0x07E0, TFT_BLACK);
+    screen.drawString("Setup Complete!", 10, 10);
+    screen.setTextColor(TFT_WHITE, TFT_BLACK);
+    screen.setTextFont(1);
+    screen.drawString("Starting Spotify...", 10, 30);
+    displayShowScreen();
     delay(1500);
     lastMusicActivityMs = millis();
-    xTaskCreatePinnedToCore(spotifyTask, "SpotifyTask", 12288, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(spotifyTask, "SpotifyTask", 12288, NULL, 1, NULL, SPOTIFY_TASK_CORE);
     spotifyTaskStarted = true;
   }
 
@@ -361,7 +455,7 @@ void loop() {
       sprite.setTextFont(1);
       sprite.setTextColor(TFT_WHITE);
       sprite.drawString("Rebooting...", 64, 85);
-      sprite.pushSprite(0, 0);
+      displayPushFrame();
       delay(1500);
       NVStore::clearAll();
       ESP.restart();
@@ -369,6 +463,10 @@ void loop() {
   } else {
     btnWasPressed = false;
   }
+
+#if defined(HAS_TOUCH)
+  handleTouch(now);
+#endif
 
 // Screen Timeout (based on music activity)
   if (NVStore::creds.screenTimeout > 0 && !screenOff) {
@@ -388,7 +486,7 @@ void loop() {
 
 // Wake button check
   if (screenOff) {
-    uint8_t wPin = NVStore::creds.wakePin;
+    uint8_t wPin = wakeButtonPin();
     if (digitalRead(wPin) == LOW) {
       wakeScreen();
     }
@@ -417,7 +515,8 @@ void loop() {
   
   // Trigger fluid UI frames if we are actively viewing the playing Spotify layout
   bool isSpotifyAnimating = lastKnownDurationMs > 0;
-  bool needsAnimation = isFadingLyric || isTitleScrolling || isSpotifyAnimating;
+  bool isOverlayShown = overlayIcon != ControlIcon::None;
+  bool needsAnimation = isFadingLyric || isTitleScrolling || isSpotifyAnimating || isOverlayShown;
 
   // Draw screen every 1s OR if an animation is playing
   if (now - lastUpdate >= UPDATE_INTERVAL || forceRedraw || needsAnimation) {
@@ -452,7 +551,15 @@ void loop() {
     
     drawSpotify(spotify);
 
-    sprite.pushSprite(0, 0);
+    if (isOverlayShown) {
+      if ((int32_t)(now - overlayUntil) >= 0) {
+        overlayIcon = ControlIcon::None;  // Expired: this frame redraws without it
+      } else {
+        drawControlOverlay(overlayIcon, overlayMsg);
+      }
+    }
+
+    displayPushFrame();
   }
   
   xSemaphoreGive(uiMutex);
@@ -1316,10 +1423,81 @@ void pollSpotifyAPI() {
   forceRedraw = true;
 }
 
+// Playback Control (needs the user-modify-playback-state scope the setup page requests)
+int sendPlayerRequest(const char *method, const char *endpoint) {
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setHandshakeTimeout(15000);
+
+  HTTPClient http;
+  http.begin(client, String("https://api.spotify.com/v1/me/player/") + endpoint);
+  http.addHeader("Authorization", "Bearer " + spotifyAccessToken);
+  http.addHeader("Content-Length", "0");  // Spotify rejects a body-less POST/PUT without it
+  int code = http.sendRequest(method);
+  http.end();
+  return code;
+}
+
+void handlePlayerCommand(PlayerCommand cmd) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (millis() > tokenExpirationTime || spotifyAccessToken == "") {
+    refreshSpotifyToken();
+  }
+  if (spotifyAccessToken == "") return;
+
+  xSemaphoreTake(uiMutex, portMAX_DELAY);
+  bool wasPlaying = spotify.isPlaying;
+  xSemaphoreGive(uiMutex);
+
+  const char *method = "POST";
+  const char *endpoint;
+  if (cmd == CMD_NEXT) {
+    endpoint = "next";
+  } else if (cmd == CMD_PREVIOUS) {
+    endpoint = "previous";
+  } else {
+    method = "PUT";
+    endpoint = wasPlaying ? "pause" : "play";
+  }
+
+  int code = sendPlayerRequest(method, endpoint);
+  if (code == 401) {
+    // Token expired early: refresh once and retry
+    refreshSpotifyToken();
+    code = sendPlayerRequest(method, endpoint);
+  }
+  Serial.printf("[Control] %s %s -> %d\n", method, endpoint, code);
+
+  const char *err = nullptr;
+  if (code == 404)      err = "No active device";
+  else if (code == 403) err = "Not allowed";
+  else if (code == 429) err = "Rate limited";
+  else if (code < 200 || code >= 300) err = "Control failed";
+
+  xSemaphoreTake(uiMutex, portMAX_DELAY);
+  if (err) {
+    overlayIcon = ControlIcon::Message;
+    overlayMsg = err;
+    overlayUntil = millis() + 1500;
+  } else if (cmd == CMD_TOGGLE_PLAY) {
+    spotify.isPlaying = !wasPlaying;  // Keeps a quick second tap right until the next poll
+  }
+  forceRedraw = true;
+  xSemaphoreGive(uiMutex);
+}
+
 // FreeRTOS Task (Core 0)
 void spotifyTask(void *pvParameters) {
   while (true) {
     pollSpotifyAPI();
-    vTaskDelay(3500 / portTICK_PERIOD_MS); 
+
+    // Sleep until the next poll, but wake early for touch controls
+    PlayerCommand cmd;
+    if (xQueueReceive(playerCmdQueue, &cmd, 3500 / portTICK_PERIOD_MS) == pdTRUE) {
+      do {
+        handlePlayerCommand(cmd);
+      } while (xQueueReceive(playerCmdQueue, &cmd, 0) == pdTRUE);
+      vTaskDelay(400 / portTICK_PERIOD_MS);  // Give Spotify a moment before re-polling
+    }
   }
 }

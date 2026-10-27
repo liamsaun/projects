@@ -13,6 +13,9 @@
 
 const char* CURRENT_VERSION = "v1.1.2-pre";
 
+#define PORTAL_STR_(x) #x
+#define PORTAL_STR(x)  PORTAL_STR_(x)
+
 // Forward declarations from main (global scope)
 extern String base64Encode(String text);
 extern String spotifyAccessToken;
@@ -331,13 +334,18 @@ static void handleControlPanel() {
     "</div>"
     "<hr class='sep'>"
     "<button class='sec' onclick=\"fetch('/wake')\" style='margin-bottom:10px'>Wake Display</button>"
-    "<label>Wake Button (GPIO pin, default: 0 = BOOT)</label>"
+    "<label>Wake Button (GPIO pin, default: " PORTAL_STR(DEFAULT_WAKE_PIN) " = BOOT)</label>"
     "<div class='slider-row'>"
     "<input type='text' id='wpin' value='0' style='width:60px;text-align:center;margin:0'>"
     "<button class='sec' onclick='saveWake()' style='width:auto;padding:10px 20px;margin:0'>Set</button>"
     "</div>"
-    "<hr class='sep'>"
-    "<div class='pins'><strong style='color:#1DB954'>Pin Connections - ESP32 / ST7735 TFT</strong>"
+    "<hr class='sep'>");
+#if defined(BOARD_WAVESHARE_C6_AMOLED_216)
+  html += F("<div class='pins'><strong style='color:#1DB954'>Waveshare ESP32-C6 2.16\" AMOLED</strong>"
+    "<p>Display and touch are built in. Tap to play/pause, swipe left for next, swipe right for previous.</p>"
+    "</div>");
+#else
+  html += F("<div class='pins'><strong style='color:#1DB954'>Pin Connections - ESP32 / ST7735 TFT</strong>"
     "<table><tr><th>Function</th><th>ESP32 Pin</th><th>TFT Pin</th></tr>"
     "<tr><td>MOSI (SDA)</td><td>GPIO 23</td><td>SDA</td></tr>"
     "<tr><td>SCK (SCL)</td><td>GPIO 18</td><td>SCK</td></tr>"
@@ -347,19 +355,22 @@ static void handleControlPanel() {
     "<tr><td>Backlight</td><td>GPIO 22</td><td>BL / LED</td></tr>"
     "<tr><td>VCC</td><td>3.3V</td><td>VCC</td></tr>"
     "<tr><td>GND</td><td>GND</td><td>GND</td></tr>"
-    "</table></div>"
-    "<hr class='sep'>"
+    "</table></div>");
+#endif
+  html += F("<hr class='sep'>"
     "<button class='sec' onclick=\"fetch('/restart').then(()=>{this.textContent='Restarting...';setTimeout(()=>location.reload(),3000)})\">Restart Device</button>"
-    "<button class='danger' onclick=\"if(confirm('Reset all settings? Device will reboot into setup mode.'))fetch('/reset').then(()=>setTimeout(()=>location.reload(),3000))\">Factory Reset</button>"
-    "<button class='sec' onclick='checkOTA()' id='otaBtn' style='margin-top:10px'>Check for Updates</button>"
-    "<script>"
+    "<button class='danger' onclick=\"if(confirm('Reset all settings? Device will reboot into setup mode.'))fetch('/reset').then(()=>setTimeout(()=>location.reload(),3000))\">Factory Reset</button>");
+#if !defined(OTA_UPDATES_DISABLED)
+  html += F("<button class='sec' onclick='checkOTA()' id='otaBtn' style='margin-top:10px'>Check for Updates</button>");
+#endif
+  html += F("<script>"
     "function upd(d){document.getElementById('track').textContent=d.track||'-';"
     "document.getElementById('artist').textContent=d.artist||'-'}"
     "function bvUp(){document.getElementById('bval').textContent=document.getElementById('bright').value}"
     "function tvUp(){document.getElementById('tval').textContent=document.getElementById('tout').value+'s'}"
     "function saveBright(){fetch('/brightness?v='+document.getElementById('bright').value)}"
     "function saveTout(){fetch('/timeout?v='+document.getElementById('tout').value)}"
-    "function saveWake(){fetch('/wakepin?v='+document.getElementById('wpin').value).then(r=>r.json()).then(d=>{if(d.ok)alert('Wake pin set to GPIO '+document.getElementById('wpin').value)})}"
+    "function saveWake(){fetch('/wakepin?v='+document.getElementById('wpin').value).then(r=>r.json()).then(d=>{alert(d.ok?'Wake pin set to GPIO '+document.getElementById('wpin').value:'That GPIO is used by the board')})}"
     "function checkOTA(){"
     "let b=document.getElementById('otaBtn');b.textContent='Checking...';"
     "fetch('/ota_check').then(r=>r.json()).then(d=>{"
@@ -445,7 +456,11 @@ static void handleRestart() {
 
 // Wake Pin Handler
 static void handleWakePin() {
-  uint8_t pin = server.arg("v").toInt();
+  int pin = server.arg("v").toInt();
+  if (pin < 0 || pin >= 64 || (RESERVED_PIN_MASK & (1ULL << pin))) {
+    server.send(400, "application/json", "{\"ok\":false}");
+    return;
+  }
   NVStore::saveWakePin(pin);
   server.send(200, "application/json", "{\"ok\":true}");
 }
@@ -456,6 +471,7 @@ static void handleWake() {
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
+#if !defined(OTA_UPDATES_DISABLED)
 // OTA Handlers
 static String otaUrl = "";
 
@@ -549,6 +565,7 @@ static void handleOTAInstall() {
   }
   http.end();
 }
+#endif
 
 // Captive Portal Redirect
 static void handleNotFound() {
@@ -609,8 +626,10 @@ inline void startSTA() {
   server.on("/restart", handleRestart);
   server.on("/wakepin", handleWakePin);
   server.on("/wake", handleWake);
+#if !defined(OTA_UPDATES_DISABLED)
   server.on("/ota_check", handleOTACheck);
   server.on("/ota_install", handleOTAInstall);
+#endif
   server.onNotFound(handleNotFound);
   server.begin();
 

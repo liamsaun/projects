@@ -1,5 +1,5 @@
 #pragma once
-#include <TFT_eSPI.h>
+#include "display.h"
 #include "data_structs.h"
 
 // Colors
@@ -10,8 +10,6 @@
 #define C_CYAN    0x07FF 
 #define C_AMBER   0xFD20 
 #define C_GREEN   0x07E0 
-
-extern TFT_eSprite sprite;
 
 // Color Blender for RGB565 Fade Animations
 inline uint16_t blendColor(uint16_t fg, uint16_t bg, uint8_t alpha) {
@@ -260,3 +258,49 @@ if (d.durationMs > 0) {
   }
 }
 
+// Playback control feedback, drawn over the album art after a tap / swipe
+enum class ControlIcon : uint8_t { None, Play, Pause, Next, Previous, Message };
+
+inline void drawControlOverlay(ControlIcon icon, const char *msg) {
+  if (icon == ControlIcon::None) return;
+
+  if (icon == ControlIcon::Message) {
+    sprite.setTextFont(2);
+    int w = sprite.textWidth(msg) + 16;
+    if (w > 124) w = 124;
+    sprite.fillRoundRect(64 - w / 2 - 2, 70, w + 4, 28, 8, C_BG);  // 2px margin hides text edges
+    sprite.drawRoundRect(64 - w / 2, 72, w, 24, 6, C_GREEN);
+    sprite.setTextDatum(MC_DATUM);
+    sprite.setTextColor(C_TEXT);
+    sprite.drawString(msg, 64, 84);
+    sprite.setTextDatum(TL_DATUM);
+    return;
+  }
+
+  // 44x44 badge centred on the album art
+  const int cx = 64, cy = 84;
+  sprite.fillRoundRect(cx - 24, cy - 24, 48, 48, 12, C_BG);  // 2px margin hides text edges
+  sprite.drawRoundRect(cx - 22, cy - 22, 44, 44, 10, C_GREEN);
+
+  switch (icon) {
+    case ControlIcon::Play:
+      sprite.fillTriangle(cx - 7, cy - 11, cx - 7, cy + 11, cx + 11, cy, C_GREEN);
+      break;
+    case ControlIcon::Pause:
+      sprite.fillRect(cx - 9, cy - 11, 6, 22, C_GREEN);
+      sprite.fillRect(cx + 3, cy - 11, 6, 22, C_GREEN);
+      break;
+    case ControlIcon::Next:
+      sprite.fillTriangle(cx - 13, cy - 10, cx - 13, cy + 10, cx - 1, cy, C_GREEN);
+      sprite.fillTriangle(cx - 1, cy - 10, cx - 1, cy + 10, cx + 11, cy, C_GREEN);
+      sprite.fillRect(cx + 11, cy - 10, 3, 20, C_GREEN);
+      break;
+    case ControlIcon::Previous:
+      sprite.fillTriangle(cx + 13, cy - 10, cx + 13, cy + 10, cx + 1, cy, C_GREEN);
+      sprite.fillTriangle(cx + 1, cy - 10, cx + 1, cy + 10, cx - 11, cy, C_GREEN);
+      sprite.fillRect(cx - 14, cy - 10, 3, 20, C_GREEN);
+      break;
+    default:
+      break;
+  }
+}

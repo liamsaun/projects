@@ -1,5 +1,6 @@
 #pragma once
 #include <Preferences.h>
+#include "config.h"
 
 // NVS Credential Store
 // Persists WiFi + Spotify creds across reboots
@@ -16,7 +17,7 @@ struct Credentials {
   String spRefreshToken;
   uint16_t screenTimeout;  // seconds, 0 = never
   uint8_t  brightness;      // 0-255, default 255
-  uint8_t  wakePin;         // GPIO pin for wake button, default 0 (boot)
+  uint8_t  wakePin;         // GPIO pin for wake button, default BOOT (DEFAULT_WAKE_PIN)
 };
 
 static Credentials creds;
@@ -30,7 +31,7 @@ inline void load() {
   creds.spRefreshToken  = prefs.getString("sp_rtok", "");
   creds.screenTimeout   = prefs.getUShort("scr_tout", 0);
   creds.brightness       = prefs.getUChar("bright", 255);
-  creds.wakePin           = prefs.getUChar("wake_pin", 0);
+  creds.wakePin           = prefs.getUChar("wake_pin", DEFAULT_WAKE_PIN);
   prefs.end();
 }
 
