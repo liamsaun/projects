@@ -1,0 +1,10 @@
+{
+  "stable": {
+    "version": "",
+    "url": ""
+  },
+  "pre": {
+    "version": "v1.1.2-pre",
+    "url": "https://github.com/meritman/espotify/releases/download/v1.1.2-pre/espotifyv1.1.2-ota-pre.bin"
+  }
+}
