@@ -3,12 +3,12 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#if !defined(UI_LADYBUG)
-#include <TJpg_Decoder.h>
-#endif
 
 #include "config.h"
 #include "display.h"
+#if !defined(UI_LADYBUG)
+#include <TJpg_Decoder.h>
+#endif
 #include "data_structs.h"
 #include "nvs_store.h"
 
