@@ -3,7 +3,9 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#if !defined(UI_LADYBUG)
 #include <TJpg_Decoder.h>
+#endif
 
 #include "config.h"
 #include "display.h"
@@ -74,33 +76,14 @@ bool     touchWokeScreen = false;
 #if defined(UI_LADYBUG)
 uint16_t albumArtHi[ALBUM_ART_HI * ALBUM_ART_HI];  // Sharp cover, big-endian RGB565
 volatile bool albumArtHiReady = false;
-bool coverDecodeHiRes = false;                      // Which buffer tjpg_callback fills
-uint16_t coverSrcW = 0, coverSrcH = 0;
 char coverStatus[2][16] = {"H:-", "L:-"};          // Last result per cover size, for COVER_DEBUG
-#endif
-
+#else
 bool tjpg_callback(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
-#if defined(UI_LADYBUG)
-  if (coverDecodeHiRes) {
-    storeCoverBlock(x, y, w, h, bitmap, coverSrcW, coverSrcH);
-    return 1;
-  }
-#endif
   if (y >= 64 || x >= 64) return 1;
   for (int16_t j = 0; j < h; j++) {
     for (int16_t i = 0; i < w; i++) {
-      uint16_t raw = bitmap[j * w + i];
-
-#if defined(UI_LADYBUG)
-      // 64x64 cover shown 1:1 on the card. TJpgDec gives true RGB565 and
-      // the AMOLED is RGB-ordered, so only the byte order needs swapping.
-      if (x + i < ALBUM_ART_W && y + j < ALBUM_ART_H) {
-        albumArt[(y + j) * ALBUM_ART_W + (x + i)] = (raw >> 8) | (raw << 8);
-      }
-      continue;
-#endif
-
       // Get the raw color from TJpgDec (outputting BGR565)
+      uint16_t raw = bitmap[j * w + i];
       
       // Swap the Red and Blue channels to convert BGR565 into true RGB565
       uint16_t color = ((raw & 0x001F) << 11) | (raw & 0x07E0) | ((raw & 0xF800) >> 11);
@@ -135,6 +118,7 @@ bool tjpg_callback(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitma
   }
   return 1;
 }
+#endif
 
 // LRC Sync Globals
 #define MAX_LYRICS 180
@@ -315,9 +299,11 @@ void setup() {
   sprite.createSprite(UI_W, UI_H);
   screen.fillScreen(TFT_BLACK);
   
+#if !defined(UI_LADYBUG)
   TJpgDec.setJpgScale(1);
   TJpgDec.setSwapBytes(false);
   TJpgDec.setCallback(tjpg_callback);
+#endif
 
 // Load NVS Credentials
   NVStore::load();
@@ -1284,24 +1270,16 @@ bool fetchAlbumArt(String url, bool hiRes = false) {
 #endif
         if (bytesRead == len) {
 #if defined(UI_LADYBUG)
-          coverDecodeHiRes = hiRes;
-          if (hiRes && TJpgDec.getJpgSize(&coverSrcW, &coverSrcH, buff, len) != JDR_OK) {
-            coverSrcW = coverSrcH = 0;
-          }
-          JRESULT jr = JDR_FMT1;
-          if (!hiRes || coverSrcW > 0) {
-            jr = TJpgDec.drawJpg(0, 0, buff, len);
-            decoded = jr == JDR_OK;
-          }
-          coverDecodeHiRes = false;
+          decoded = hiRes ? decodeCover(buff, len, albumArtHi, ALBUM_ART_HI)
+                          : decodeCover(buff, len, albumArt, ALBUM_ART_W);
           if (decoded && hiRes) {
             // A decode that left the buffer one flat colour didn't really work
             bool flat = true;
             for (int i = 1; i < ALBUM_ART_HI * ALBUM_ART_HI && flat; i += 97) flat = albumArtHi[i] == albumArtHi[0];
             if (flat) decoded = false;
-            snprintf(status, sizeof(coverStatus[0]), "H:%s%dx%d", flat ? "flat" : "ok", coverSrcW, coverSrcH);
+            snprintf(status, sizeof(coverStatus[0]), "H:%s%dk", flat ? "flat" : "ok", len / 1024);
           } else {
-            snprintf(status, sizeof(coverStatus[0]), "%c:%s%d", tag, decoded ? "ok" : "jpg", decoded ? len / 1024 : (int)jr);
+            snprintf(status, sizeof(coverStatus[0]), "%c:%s%dk", tag, decoded ? "ok" : "jpgfail", len / 1024);
           }
 #else
           decoded = TJpgDec.drawJpg(0, 0, buff, len) == JDR_OK;

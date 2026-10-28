@@ -42,19 +42,16 @@ extern uint16_t albumArt[];
 extern uint16_t albumArtHi[];
 extern volatile bool albumArtHiReady;
 
-// Stores one decoded JPEG block of a srcW x srcH cover into albumArtHi (nearest neighbour)
-inline void storeCoverBlock(int x, int y, int w, int h, const uint16_t *bitmap, int srcW, int srcH) {
-  int dx0 = (x * ALBUM_ART_HI + srcW - 1) / srcW, dx1 = ((x + w) * ALBUM_ART_HI + srcW - 1) / srcW;
-  int dy0 = (y * ALBUM_ART_HI + srcH - 1) / srcH, dy1 = ((y + h) * ALBUM_ART_HI + srcH - 1) / srcH;
-  if (dx1 > ALBUM_ART_HI) dx1 = ALBUM_ART_HI;
-  if (dy1 > ALBUM_ART_HI) dy1 = ALBUM_ART_HI;
-  for (int dy = dy0; dy < dy1; dy++) {
-    const uint16_t *row = bitmap + (dy * srcH / ALBUM_ART_HI - y) * w;
-    for (int dx = dx0; dx < dx1; dx++) {
-      uint16_t c = row[dx * srcW / ALBUM_ART_HI - x];
-      albumArtHi[dy * ALBUM_ART_HI + dx] = (c >> 8) | (c << 8);  // Panel wants big-endian
-    }
-  }
+// Decodes a JPEG cover straight into one of the cover buffers (big-endian RGB565, scaled to fit).
+// Uses LovyanGFX's decoder: TJpg_Decoder can't be used on the ESP32-C6, whose ROM has an older
+// tjpgd under the same function names. The build links that one, which lays out its data
+// differently (sizes read as 300x0, colours scrambled).
+inline bool decodeCover(const uint8_t *jpg, size_t len, uint16_t *dst, int size) {
+  LGFX_Sprite canvas;
+  canvas.setColorDepth(16);
+  canvas.setBuffer(dst, size, size, 16);
+  canvas.fillScreen(TFT_BLACK);
+  return canvas.drawJpg(jpg, len, 0, 0, size, size, 0, 0, 0.0f, 0.0f);  // scale 0 = fit
 }
 
 // Little Pieces
