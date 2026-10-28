@@ -71,7 +71,20 @@ uint32_t lastTouchPollMs = 0;
 bool     touchWokeScreen = false;
 #endif
 
+#if defined(UI_LADYBUG)
+uint16_t albumArtHi[ALBUM_ART_HI * ALBUM_ART_HI];  // Sharp cover, big-endian RGB565
+volatile bool albumArtHiReady = false;
+bool coverDecodeHiRes = false;                      // Which buffer tjpg_callback fills
+uint16_t coverSrcW = 0, coverSrcH = 0;
+#endif
+
 bool tjpg_callback(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
+#if defined(UI_LADYBUG)
+  if (coverDecodeHiRes) {
+    storeCoverBlock(x, y, w, h, bitmap, coverSrcW, coverSrcH);
+    return 1;
+  }
+#endif
   if (y >= 64 || x >= 64) return 1;
   for (int16_t j = 0; j < h; j++) {
     for (int16_t i = 0; i < w; i++) {
@@ -1224,8 +1237,11 @@ void refreshSpotifyToken() {
   http.end();
 }
 
-void fetchAlbumArt(String url) {
-  if (url == "") return;
+// Downloads and decodes a cover. hiRes decodes into albumArtHi (any size, scaled to fit).
+bool fetchAlbumArt(String url, bool hiRes = false) {
+  if (url == "") return false;
+  bool decoded = false;
+  const int maxLen = hiRes ? 80000 : 20000;  // ~300x300 jpeg : 64x64 jpeg
   
   WiFiClientSecure client;
   client.setInsecure();
@@ -1235,7 +1251,7 @@ void fetchAlbumArt(String url) {
   
   if (httpCode == 200) {
     int len = http.getSize();
-    if (len > 0 && len < 20000) { // Safety check < 20KB for 64x64 jpeg
+    if (len > 0 && len < maxLen) { // Safety check on jpeg size
       uint8_t * buff = (uint8_t *) malloc(len);
       if (buff) {
         WiFiClient * stream = http.getStreamPtr();
@@ -1249,13 +1265,25 @@ void fetchAlbumArt(String url) {
           delay(1);
         }
         if (bytesRead == len) {
-          TJpgDec.drawJpg(0, 0, buff, len);
+#if defined(UI_LADYBUG)
+          coverDecodeHiRes = hiRes;
+          if (hiRes && TJpgDec.getJpgSize(&coverSrcW, &coverSrcH, buff, len) != JDR_OK) {
+            coverSrcW = coverSrcH = 0;
+          }
+          if (!hiRes || coverSrcW > 0) {
+            decoded = TJpgDec.drawJpg(0, 0, buff, len) == JDR_OK;
+          }
+          coverDecodeHiRes = false;
+#else
+          decoded = TJpgDec.drawJpg(0, 0, buff, len) == JDR_OK;
+#endif
         }
         free(buff);
       }
     }
   }
   http.end();
+  return decoded;
 }
 
 void pollSpotifyAPI() {
@@ -1281,6 +1309,7 @@ void pollSpotifyAPI() {
   String pendingAlbum = "";
   uint32_t pendingDurationMs = 0;
   String pendingCoverUrl = "";
+  String pendingCoverUrlHi = "";  // 300x300, for themes that show a sharp cover
   int httpCode = 0;
   
   static uint32_t apiBackoff = 0;
@@ -1359,6 +1388,8 @@ void pollSpotifyAPI() {
                pendingCoverUrl = doc["item"]["album"]["images"][0]["url"].as<String>();
             }
             if (pendingCoverUrl == "null") pendingCoverUrl = ""; // Handle missing art
+            pendingCoverUrlHi = doc["item"]["album"]["images"][1]["url"].as<String>();
+            if (pendingCoverUrlHi == "null") pendingCoverUrlHi = "";
             pendingFetch = true;
           }
         }
@@ -1421,8 +1452,18 @@ void pollSpotifyAPI() {
     currentTrackForLyrics = pendingTitle;
     
     memset(albumArt, 0, sizeof(albumArt));
-    
+
+#if defined(UI_LADYBUG)
+    // Sharp 300x300 cover first; the 64x64 one if that can't be fetched or doesn't fit in memory
+    albumArtHiReady = false;
+    if (fetchAlbumArt(pendingCoverUrlHi, true)) {
+      albumArtHiReady = true;
+    } else {
+      fetchAlbumArt(pendingCoverUrl);
+    }
+#else
     fetchAlbumArt(pendingCoverUrl);
+#endif
     fetchLyrics(pendingTitle, pendingArtist, pendingAlbum, pendingDurationMs);
   }
   

@@ -182,6 +182,40 @@ inline void service() {
   if (io) applyBrightness();
 }
 
+// Full-resolution image shown wherever the UI canvas is painted with a key colour
+// (used for album art, so it isn't limited to the canvas resolution)
+static const uint16_t *keyImg = nullptr;  // big-endian RGB565, keyW x keyH
+static int keyX = 0, keyY = 0, keyW = 0, keyH = 0;
+static uint16_t keyBE = 0;
+
+// x, y, w, h in panel pixels. Pass img = nullptr to turn it off.
+inline void setKeyedImage(const uint16_t *img, int x, int y, int w, int h, uint16_t keyColor) {
+  keyImg = img;
+  keyX = x;
+  keyY = y;
+  keyW = w;
+  keyH = h;
+  keyBE = (keyColor >> 8) | (keyColor << 8);
+}
+
+// Scales one canvas row into one panel row at panel y = py
+static void scaleRow(uint16_t *out, const uint16_t *in, int srcW, int py, bool keyed) {
+  const uint16_t *keyRow = keyed ? keyImg + (py - keyY) * keyW : nullptr;
+  int px = X_OFFSET;
+  for (int x = 0; x < srcW; x++) {
+    uint16_t c = in[x];
+    if (keyed && c == keyBE) {
+      for (int k = 0; k < AMOLED_SCALE; k++, px++) {
+        int kx = px - keyX;
+        *out++ = (kx >= 0 && kx < keyW) ? keyRow[kx] : 0;
+      }
+    } else {
+      for (int k = 0; k < AMOLED_SCALE; k++) *out++ = c;
+      px += AMOLED_SCALE;
+    }
+  }
+}
+
 // Pushes a UI_W x UI_H big-endian RGB565 frame, scaled by AMOLED_SCALE and centred
 inline void pushScaled(const uint16_t *src, int srcW, int srcH) {
   if (!io || !src || srcW != UI_W || srcH != UI_H) return;
@@ -193,14 +227,16 @@ inline void pushScaled(const uint16_t *src, int srcW, int srcH) {
     uint16_t *out = buf;
     for (int r = 0; r < BAND_SRC_ROWS; r++) {
       const uint16_t *in = src + (sy + r) * srcW;
-      uint16_t *rowStart = out;
-      for (int x = 0; x < srcW; x++) {
-        uint16_t px = in[x];
-        for (int k = 0; k < AMOLED_SCALE; k++) *out++ = px;
-      }
-      for (int k = 1; k < AMOLED_SCALE; k++) {
-        memcpy(out, rowStart, dstW * 2);
-        out += dstW;
+      int py = Y_OFFSET + (sy + r) * AMOLED_SCALE;
+      bool prevKeyed = false;
+      for (int k = 0; k < AMOLED_SCALE; k++, py++, out += dstW) {
+        bool keyed = keyImg && py >= keyY && py < keyY + keyH;
+        if (k > 0 && !keyed && !prevKeyed) {
+          memcpy(out, out - dstW, dstW * 2);  // Plain rows just repeat
+        } else {
+          scaleRow(out, in, srcW, py, keyed);
+        }
+        prevKeyed = keyed;
       }
     }
     writeBand(X_OFFSET, Y_OFFSET + sy * AMOLED_SCALE, dstW, BAND_ROWS, buf);

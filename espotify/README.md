@@ -20,7 +20,7 @@ To build this project, you only need two main components:
 ##  Waveshare ESP32-C6 2.16" AMOLED Touch Board
 The [Waveshare ESP32-C6-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-c6-touch-amoled-2.16.htm) works out of the box: the display, touch panel and buttons are built in, so there is no wiring.
 
-It has its own **ladybug theme**: a pastel polka-dot screen with the album cover on a little card, and a ladybug that walks along a flowering vine as the song plays. Flowers bloom wherever she has been, and she naps when the music is paused. If a song has no cover art, a big ladybug says hi instead.
+It has its own **ladybug theme**: a pastel polka-dot screen with the album cover on a little card (shown sharp, at the panel's full resolution), and a ladybug that walks along a flowering vine as the song plays. Flowers bloom wherever she has been, and she naps when the music is paused. If a song has no cover art, a big ladybug says hi instead.
 
 **Touch controls**
 | Gesture | Action |

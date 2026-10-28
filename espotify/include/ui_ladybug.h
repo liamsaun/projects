@@ -7,8 +7,11 @@
 //   pastel polka-dot background, album art on a little card, and a ladybug
 //   that walks along a vine as the song plays (and naps when it's paused).
 
+// Low-res cover (Spotify's 64x64 image), drawn on the canvas
 #define ALBUM_ART_W   64
 #define ALBUM_ART_H   64
+// Sharp cover (from the 300x300 image) shown at full panel resolution over the same spot
+#define ALBUM_ART_HI  (ALBUM_ART_W * AMOLED_SCALE)
 
 static constexpr uint16_t lb565(uint8_t r, uint8_t g, uint8_t b) {
   return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
@@ -31,7 +34,27 @@ static constexpr int LB_W = 160;
 static constexpr int LB_TEXT_MAX_W = 150;
 static constexpr int LB_VINE_X0 = 12, LB_VINE_X1 = 148, LB_VINE_Y = 153;
 
+static constexpr int LB_ART_X = 48, LB_ART_Y = 8;
+static constexpr uint16_t LB_ART_KEY = 0x0821;  // Canvas colour meaning "sharp cover goes here"
+
 extern uint16_t albumArt[];
+extern uint16_t albumArtHi[];
+extern volatile bool albumArtHiReady;
+
+// Stores one decoded JPEG block of a srcW x srcH cover into albumArtHi (nearest neighbour)
+inline void storeCoverBlock(int x, int y, int w, int h, const uint16_t *bitmap, int srcW, int srcH) {
+  int dx0 = (x * ALBUM_ART_HI + srcW - 1) / srcW, dx1 = ((x + w) * ALBUM_ART_HI + srcW - 1) / srcW;
+  int dy0 = (y * ALBUM_ART_HI + srcH - 1) / srcH, dy1 = ((y + h) * ALBUM_ART_HI + srcH - 1) / srcH;
+  if (dx1 > ALBUM_ART_HI) dx1 = ALBUM_ART_HI;
+  if (dy1 > ALBUM_ART_HI) dy1 = ALBUM_ART_HI;
+  for (int dy = dy0; dy < dy1; dy++) {
+    const uint16_t *row = bitmap + (dy * srcH / ALBUM_ART_HI - y) * w;
+    for (int dx = dx0; dx < dx1; dx++) {
+      uint16_t c = row[dx * srcW / ALBUM_ART_HI - x];
+      albumArtHi[dy * ALBUM_ART_HI + dx] = (c >> 8) | (c << 8);  // Panel wants big-endian
+    }
+  }
+}
 
 // Little Pieces
 
@@ -134,11 +157,18 @@ inline bool albumArtMissing() {
 }
 
 inline void drawAlbumCard() {
-  const int x = 48, y = 8;
+  const int x = LB_ART_X, y = LB_ART_Y;
   sprite.fillRoundRect(x - 4 + 2, y - 4 + 3, 72, 72, 9, LB_SHADOW);
   sprite.fillRoundRect(x - 4, y - 4, 72, 72, 9, LB_CARD);
 
-  if (albumArtMissing()) {
+  // Only key the panel while a sharp cover is loaded, so stray key-coloured pixels elsewhere are left alone
+  bool sharp = albumArtHiReady;
+  Amoled::setKeyedImage(sharp ? albumArtHi : nullptr, Amoled::X_OFFSET + x * AMOLED_SCALE,
+                        Amoled::Y_OFFSET + y * AMOLED_SCALE, ALBUM_ART_HI, ALBUM_ART_HI, LB_ART_KEY);
+
+  if (sharp) {
+    sprite.fillRect(x, y, ALBUM_ART_W, ALBUM_ART_H, LB_ART_KEY);
+  } else if (albumArtMissing()) {
     // No cover yet: a big ladybug says hi instead
     sprite.fillRoundRect(x, y, ALBUM_ART_W, ALBUM_ART_H, 6, LB_BG);
     drawLadybugFace(x + 32, y + 30, 18);
