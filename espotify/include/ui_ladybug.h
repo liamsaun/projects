@@ -35,7 +35,8 @@ static constexpr int LB_TEXT_MAX_W = 150;
 static constexpr int LB_VINE_X0 = 12, LB_VINE_X1 = 148, LB_VINE_Y = 153;
 
 static constexpr int LB_ART_X = 48, LB_ART_Y = 8;
-static constexpr uint16_t LB_ART_KEY = 0x0821;  // Canvas colour meaning "sharp cover goes here"
+// Canvas colour meaning "sharp cover goes here". Loud magenta, so a compositing fault is obvious.
+static constexpr uint16_t LB_ART_KEY = 0xF81F;
 
 extern uint16_t albumArt[];
 extern uint16_t albumArtHi[];
@@ -337,6 +338,18 @@ inline void drawSpotify(const SpotifyData &d) {
   }
 
   drawVine(d);
+
+#if defined(COVER_DEBUG)
+  // Cover download diagnostics: last result for the sharp (H) and fallback (L) cover, free heap / largest block in KB
+  extern char coverStatus[2][16];
+  char dbg[40];
+  snprintf(dbg, sizeof(dbg), "%s %s %u/%u", coverStatus[0], coverStatus[1],
+           (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024));
+  sprite.setTextFont(1);
+  sprite.setTextDatum(TL_DATUM);
+  sprite.setTextColor(LB_TEXT, LB_BG);
+  sprite.drawString(dbg, 2, 141);
+#endif
 }
 
 // Playback control feedback: a bubble over the album art (or a speech bubble for errors)

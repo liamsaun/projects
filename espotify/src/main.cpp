@@ -76,6 +76,7 @@ uint16_t albumArtHi[ALBUM_ART_HI * ALBUM_ART_HI];  // Sharp cover, big-endian RG
 volatile bool albumArtHiReady = false;
 bool coverDecodeHiRes = false;                      // Which buffer tjpg_callback fills
 uint16_t coverSrcW = 0, coverSrcH = 0;
+char coverStatus[2][16] = {"H:-", "L:-"};          // Last result per cover size, for COVER_DEBUG
 #endif
 
 bool tjpg_callback(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
@@ -1239,6 +1240,11 @@ void refreshSpotifyToken() {
 
 // Downloads and decodes a cover. hiRes decodes into albumArtHi (any size, scaled to fit).
 bool fetchAlbumArt(String url, bool hiRes = false) {
+#if defined(UI_LADYBUG)
+  char *status = coverStatus[hiRes ? 0 : 1];
+  const char tag = hiRes ? 'H' : 'L';
+  snprintf(status, sizeof(coverStatus[0]), "%c:none", tag);
+#endif
   if (url == "") return false;
   bool decoded = false;
   const int maxLen = hiRes ? 80000 : 20000;  // ~300x300 jpeg : 64x64 jpeg
@@ -1249,10 +1255,19 @@ bool fetchAlbumArt(String url, bool hiRes = false) {
   http.begin(client, url);
   int httpCode = http.GET();
   
+#if defined(UI_LADYBUG)
+  snprintf(status, sizeof(coverStatus[0]), "%c:http%d", tag, httpCode);
+#endif
   if (httpCode == 200) {
     int len = http.getSize();
+#if defined(UI_LADYBUG)
+    snprintf(status, sizeof(coverStatus[0]), "%c:size%d", tag, len);
+#endif
     if (len > 0 && len < maxLen) { // Safety check on jpeg size
       uint8_t * buff = (uint8_t *) malloc(len);
+#if defined(UI_LADYBUG)
+      if (!buff) snprintf(status, sizeof(coverStatus[0]), "%c:nomem%dk", tag, len / 1024);
+#endif
       if (buff) {
         WiFiClient * stream = http.getStreamPtr();
         int bytesRead = 0;
@@ -1264,16 +1279,30 @@ bool fetchAlbumArt(String url, bool hiRes = false) {
           }
           delay(1);
         }
+#if defined(UI_LADYBUG)
+        if (bytesRead != len) snprintf(status, sizeof(coverStatus[0]), "%c:rd%d/%d", tag, bytesRead / 1024, len / 1024);
+#endif
         if (bytesRead == len) {
 #if defined(UI_LADYBUG)
           coverDecodeHiRes = hiRes;
           if (hiRes && TJpgDec.getJpgSize(&coverSrcW, &coverSrcH, buff, len) != JDR_OK) {
             coverSrcW = coverSrcH = 0;
           }
+          JRESULT jr = JDR_FMT1;
           if (!hiRes || coverSrcW > 0) {
-            decoded = TJpgDec.drawJpg(0, 0, buff, len) == JDR_OK;
+            jr = TJpgDec.drawJpg(0, 0, buff, len);
+            decoded = jr == JDR_OK;
           }
           coverDecodeHiRes = false;
+          if (decoded && hiRes) {
+            // A decode that left the buffer one flat colour didn't really work
+            bool flat = true;
+            for (int i = 1; i < ALBUM_ART_HI * ALBUM_ART_HI && flat; i += 97) flat = albumArtHi[i] == albumArtHi[0];
+            if (flat) decoded = false;
+            snprintf(status, sizeof(coverStatus[0]), "H:%s%dx%d", flat ? "flat" : "ok", coverSrcW, coverSrcH);
+          } else {
+            snprintf(status, sizeof(coverStatus[0]), "%c:%s%d", tag, decoded ? "ok" : "jpg", decoded ? len / 1024 : (int)jr);
+          }
 #else
           decoded = TJpgDec.drawJpg(0, 0, buff, len) == JDR_OK;
 #endif
@@ -1283,6 +1312,10 @@ bool fetchAlbumArt(String url, bool hiRes = false) {
     }
   }
   http.end();
+#if defined(UI_LADYBUG)
+  Serial.printf("[Cover] %s %s heap=%u largest=%u\n", hiRes ? "hi" : "lo", status,
+                (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+#endif
   return decoded;
 }
 
@@ -1456,6 +1489,7 @@ void pollSpotifyAPI() {
 #if defined(UI_LADYBUG)
     // Sharp 300x300 cover first; the 64x64 one if that can't be fetched or doesn't fit in memory
     albumArtHiReady = false;
+    strcpy(coverStatus[1], "L:-");
     if (fetchAlbumArt(pendingCoverUrlHi, true)) {
       albumArtHiReady = true;
     } else {
