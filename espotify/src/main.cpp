@@ -441,7 +441,7 @@ void loop() {
     screen.drawString("Setup Complete!", 10, 10);
     screen.setTextColor(TFT_WHITE, TFT_BLACK);
     screen.setTextFont(1);
-    screen.drawString("Starting Spotify...", 10, 30);
+    screen.drawString("Starting up...", 10, 30);
     displayShowScreen();
     delay(1500);
     lastMusicActivityMs = millis();
@@ -1392,7 +1392,7 @@ void pollSpotifyAPI() {
       xSemaphoreTake(uiMutex, portMAX_DELAY);
       strncpy(spotify.title, err.c_str(), sizeof(spotify.title)-1);
       spotify.title[sizeof(spotify.title)-1] = '\0';
-      strcpy(spotify.artist, "Spotify Rate Limit");
+      strcpy(spotify.artist, "Rate limited");
       strcpy(spotify.currentLyric1, "");
       strcpy(spotify.currentLyric2, "");
       
