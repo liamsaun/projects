@@ -26,7 +26,11 @@ TFT_eSprite sprite = TFT_eSprite(&tft);
 TFT_eSPI &screen = tft;         // Boot/setup text goes straight to the panel
 #endif
 
+#if defined(UI_LADYBUG)
+#include "ui_ladybug.h"
+#else
 #include "ui_volos.h"
+#endif
 
 SpotifyData spotify   = {};
 
@@ -39,7 +43,7 @@ int lastKnownDurationMs = 0;
 uint32_t lastUpdate    = 0;
 bool     forceRedraw   = true;
 
-uint16_t albumArt[15616] = {0}; // 128x122 buffer for background cover art
+uint16_t albumArt[ALBUM_ART_W * ALBUM_ART_H] = {0}; // Cover art, laid out by the UI theme
 
 // Screen Timeout
 uint32_t lastMusicActivityMs = 0;  // tracks when music was last playing
@@ -71,8 +75,18 @@ bool tjpg_callback(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitma
   if (y >= 64 || x >= 64) return 1;
   for (int16_t j = 0; j < h; j++) {
     for (int16_t i = 0; i < w; i++) {
-      // Get the raw color from TJpgDec (outputting BGR565)
       uint16_t raw = bitmap[j * w + i];
+
+#if defined(UI_LADYBUG)
+      // 64x64 cover shown 1:1 on the card. TJpgDec gives true RGB565 and
+      // the AMOLED is RGB-ordered, so only the byte order needs swapping.
+      if (x + i < ALBUM_ART_W && y + j < ALBUM_ART_H) {
+        albumArt[(y + j) * ALBUM_ART_W + (x + i)] = (raw >> 8) | (raw << 8);
+      }
+      continue;
+#endif
+
+      // Get the raw color from TJpgDec (outputting BGR565)
       
       // Swap the Red and Blue channels to convert BGR565 into true RGB565
       uint16_t color = ((raw & 0x001F) << 11) | (raw & 0x07E0) | ((raw & 0xF800) >> 11);
@@ -284,7 +298,7 @@ void setup() {
   tft.begin();
   tft.setRotation(SCREEN_ROT);
 #endif
-  sprite.createSprite(128, 160);
+  sprite.createSprite(UI_W, UI_H);
   screen.fillScreen(TFT_BLACK);
   
   TJpgDec.setJpgScale(1);
@@ -451,10 +465,10 @@ void loop() {
       sprite.setTextDatum(TC_DATUM);
       sprite.setTextFont(2);
       sprite.setTextColor(0xF800);
-      sprite.drawString("FACTORY RESET", 64, 60);
+      sprite.drawString("FACTORY RESET", UI_W / 2, 60);
       sprite.setTextFont(1);
       sprite.setTextColor(TFT_WHITE);
-      sprite.drawString("Rebooting...", 64, 85);
+      sprite.drawString("Rebooting...", UI_W / 2, 85);
       displayPushFrame();
       delay(1500);
       NVStore::clearAll();
@@ -510,8 +524,7 @@ void loop() {
 
   xSemaphoreTake(uiMutex, portMAX_DELAY);
   
-  sprite.setTextFont(2);
-  bool isTitleScrolling = (sprite.textWidth(spotify.title) > 124);
+  bool isTitleScrolling = uiTitleScrolls(spotify.title);
   
   // Trigger fluid UI frames if we are actively viewing the playing Spotify layout
   bool isSpotifyAnimating = lastKnownDurationMs > 0;

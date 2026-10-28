@@ -14,3 +14,6 @@ struct SpotifyData {
   int16_t  activeWordIdx2; // Active word index in currentLyric2 (-1 for none)
 };
 
+// Playback control feedback shown briefly after a tap / swipe
+enum class ControlIcon : uint8_t { None, Play, Pause, Next, Previous, Message };
+

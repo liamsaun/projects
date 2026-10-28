@@ -29,7 +29,14 @@ inline void drawGrid(uint16_t accentColor) {
 
 
 // Spotify UI Draw
-extern uint16_t albumArt[15616];
+#define ALBUM_ART_W   128
+#define ALBUM_ART_H   122
+extern uint16_t albumArt[];
+
+inline bool uiTitleScrolls(const char *title) {
+  sprite.setTextFont(2);
+  return sprite.textWidth(title) > 124;
+}
 
 inline void drawSpotify(const SpotifyData &d) {
   sprite.fillSprite(C_BG);
@@ -259,8 +266,6 @@ if (d.durationMs > 0) {
 }
 
 // Playback control feedback, drawn over the album art after a tap / swipe
-enum class ControlIcon : uint8_t { None, Play, Pause, Next, Previous, Message };
-
 inline void drawControlOverlay(ControlIcon icon, const char *msg) {
   if (icon == ControlIcon::None) return;
 

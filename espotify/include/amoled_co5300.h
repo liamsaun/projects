@@ -20,9 +20,13 @@ static constexpr int BAND_SRC_ROWS = 4;
 static constexpr int BAND_ROWS     = BAND_SRC_ROWS * AMOLED_SCALE;
 static constexpr size_t BAND_BYTES = (size_t)AMOLED_W * BAND_ROWS * 2;
 
-static_assert(AMOLED_X_OFFSET % 2 == 0 && AMOLED_Y_OFFSET % 2 == 0, "CO5300 windows must start on even pixels");
-static_assert((128 * AMOLED_SCALE) % 2 == 0 && BAND_ROWS % 2 == 0, "CO5300 windows must be an even size");
-static_assert(160 % BAND_SRC_ROWS == 0, "Bands must tile the sprite height");
+static constexpr int X_OFFSET = (AMOLED_W - UI_W * AMOLED_SCALE) / 2;
+static constexpr int Y_OFFSET = (AMOLED_H - UI_H * AMOLED_SCALE) / 2;
+
+static_assert(X_OFFSET >= 0 && Y_OFFSET >= 0, "UI canvas doesn't fit the panel at AMOLED_SCALE");
+static_assert(X_OFFSET % 2 == 0 && Y_OFFSET % 2 == 0, "CO5300 windows must start on even pixels");
+static_assert((UI_W * AMOLED_SCALE) % 2 == 0 && BAND_ROWS % 2 == 0, "CO5300 windows must be an even size");
+static_assert(UI_H % BAND_SRC_ROWS == 0, "Bands must tile the canvas height");
 
 static esp_lcd_panel_io_handle_t io = nullptr;
 static uint16_t *bandBuf[2] = {nullptr, nullptr};
@@ -178,9 +182,9 @@ inline void service() {
   if (io) applyBrightness();
 }
 
-// Pushes a 128x160 big-endian RGB565 frame, scaled by AMOLED_SCALE and centred
+// Pushes a UI_W x UI_H big-endian RGB565 frame, scaled by AMOLED_SCALE and centred
 inline void pushScaled(const uint16_t *src, int srcW, int srcH) {
-  if (!io || !src) return;
+  if (!io || !src || srcW != UI_W || srcH != UI_H) return;
   applyBrightness();
 
   const int dstW = srcW * AMOLED_SCALE;
@@ -199,7 +203,7 @@ inline void pushScaled(const uint16_t *src, int srcW, int srcH) {
         out += dstW;
       }
     }
-    writeBand(AMOLED_X_OFFSET, AMOLED_Y_OFFSET + sy * AMOLED_SCALE, dstW, BAND_ROWS, buf);
+    writeBand(X_OFFSET, Y_OFFSET + sy * AMOLED_SCALE, dstW, BAND_ROWS, buf);
   }
 }
 

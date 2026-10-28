@@ -20,6 +20,8 @@ To build this project, you only need two main components:
 ##  Waveshare ESP32-C6 2.16" AMOLED Touch Board
 The [Waveshare ESP32-C6-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-c6-touch-amoled-2.16.htm) works out of the box: the display, touch panel and buttons are built in, so there is no wiring.
 
+It has its own **ladybug theme**: a pastel polka-dot screen with the album cover on a little card, and a ladybug that walks along a flowering vine as the song plays. Flowers bloom wherever she has been, and she naps when the music is paused. If a song has no cover art, a big ladybug says hi instead.
+
 **Touch controls**
 | Gesture | Action |
 | :--- | :--- |
@@ -30,13 +32,13 @@ The [Waveshare ESP32-C6-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-c6-to
 
 An icon confirms each gesture. If Spotify refuses the command, a short message appears instead, for example *No active device* when nothing is playing on any of your devices.
 
-![Touch feedback on the AMOLED: now playing, pause, play, next, previous and an error message](docs/amoled-touch-preview.png)
+![Ladybug theme: now playing, paused, no cover art, tap to pause, swipe for next, and an error message](docs/amoled-touch-preview.png)
 
 **Buttons:** press **BOOT** to wake the screen, hold it for 3 seconds to factory reset.
 
 **Flashing:** build and upload the `waveshare_c6_amoled_216` environment with PlatformIO (`pio run -e waveshare_c6_amoled_216 -t upload`). This board uses its own firmware, so the *Check for Updates* button is hidden in its Web Control Panel and the release `.bin` files below are for the ST7735 build only.
 
-The 128x160 interface is scaled 3x and centred on the 480x480 panel. Orientation follows Waveshare's own demo. If your picture comes out upside down, try setting `AMOLED_MADCTL` in `include/config.h` to `0xF0`. If swipes go the wrong way, flip `TOUCH_INVERT_X`.
+The theme is drawn at 160x160 and scaled 3x to fill the 480x480 panel (see `include/ui_ladybug.h`). Orientation follows Waveshare's own demo. If your picture comes out upside down, try setting `AMOLED_MADCTL` in `include/config.h` to `0xF0`. If swipes go the wrong way, flip `TOUCH_INVERT_X`.
 
 ##  Wiring Guide (recommended)
 

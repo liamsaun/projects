@@ -9,6 +9,11 @@
 
 #define DISPLAY_AMOLED_QSPI   1
 #define HAS_TOUCH             1
+#define UI_LADYBUG            1   // Pastel ladybug theme (include/ui_ladybug.h)
+
+// UI canvas, scaled up AMOLED_SCALE times to fill the panel
+#define UI_W              160
+#define UI_H              160
 
 // AMOLED (QSPI, no DC pin, reset is done by power-cycling PMIC ALDO3)
 #define AMOLED_SPI_HOST    SPI2_HOST
@@ -23,10 +28,7 @@
 #define AMOLED_H          480
 #define AMOLED_MADCTL    0x30       // Orientation used by Waveshare's demos (0xF0 = rotated 180 deg)
 
-// The 128x160 UI is scaled 3x (384x480) and centred; AMOLED black = pixels off
 #define AMOLED_SCALE        3
-#define AMOLED_X_OFFSET   ((AMOLED_W - 128 * AMOLED_SCALE) / 2)
-#define AMOLED_Y_OFFSET   ((AMOLED_H - 160 * AMOLED_SCALE) / 2)
 
 // Shared I2C bus: AXP2101 PMIC + CST9217 touch
 #define I2C_PIN_SDA         8
@@ -68,8 +70,8 @@
 #define RESERVED_PIN_MASK   0ULL
 
 // Display
-#define SCREEN_W    128       // Portrait width
-#define SCREEN_H    160       // Portrait height
+#define UI_W        128       // Portrait width
+#define UI_H        160       // Portrait height
 #define SCREEN_ROT    2       // Portrait rotation (180 deg)
 
 // Backlight PWM
