@@ -1,0 +1,13 @@
+{
+  "llm": {
+    "provider": "claude_code",
+    "model": "opus"
+  },
+  "search": {
+    "provider": "duckduckgo"
+  },
+  "system": {
+    "backend_port": 8001,
+    "frontend_port": 3782
+  }
+}
